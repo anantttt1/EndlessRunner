@@ -18,6 +18,50 @@ const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 const isMobile = isTouch || window.matchMedia('(max-width: 900px)').matches;
 const LOW = isMobile || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
 
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, type = 'square', vol = 0.08, slideTo = null) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (slideTo != null) osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
+  g.gain.setValueAtTime(vol, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+function noiseBurst(dur = 0.12, vol = 0.1) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const n = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const g = ctx.createGain();
+  g.gain.value = vol;
+  src.connect(g); g.connect(ctx.destination);
+  src.start();
+}
+const SFX = {
+  jump: () => { tone(320, 0.12, 'square', 0.07, 520); },
+  slide: () => { tone(180, 0.1, 'triangle', 0.06, 90); },
+  coin: () => { tone(880, 0.08, 'sine', 0.07); setTimeout(() => tone(1320, 0.1, 'sine', 0.06), 40); },
+  hit: () => { noiseBurst(0.18, 0.14); tone(120, 0.25, 'sawtooth', 0.1, 40); },
+  start: () => { tone(440, 0.1, 'sine', 0.06); setTimeout(() => tone(660, 0.12, 'sine', 0.06), 80); },
+};
+
 const canvas = $('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !LOW, powerPreference: 'high-performance', alpha: false });
 const maxPR = LOW ? 1.25 : 2;
@@ -116,10 +160,20 @@ function createRunner() {
 const runner = createRunner();
 scene.add(runner);
 
+const BASE_SPEED = 10;
+const MAX_SPEED = 28;
+function speedFromDistance(d) {
+  const t = d / 400;
+  return Math.min(MAX_SPEED, BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (1 - Math.exp(-t)));
+}
+function spawnGap(d) {
+  return Math.max(6.5, 14 - d * 0.012);
+}
+
 const state = {
-  playing: false, speed: 12, baseSpeed: 12, lane: 1, targetX: 0, y: 0, vy: 0,
+  playing: false, speed: BASE_SPEED, lane: 1, targetX: 0, y: 0, vy: 0,
   jumping: false, sliding: false, slideTimer: 0, distance: 0, score: 0, coins: 0,
-  clock: 0, obstacles: [], coins3d: [], dead: false
+  clock: 0, obstacles: [], coins3d: [], dead: false, nextSpawnZ: -30, lastLane: 1
 };
 
 function clearWorld() {
@@ -127,15 +181,28 @@ function clearWorld() {
   state.obstacles = []; state.coins3d = [];
 }
 
-function spawnStuffAt(z) {
-  const lane = Math.floor(Math.random() * 3);
-  if (Math.random() < 0.5) {
-    const tall = Math.random() > 0.45;
+function spawnStuffAt(z, forceObs = false) {
+  let lane = Math.floor(Math.random() * 3);
+  if (lane === state.lastLane && Math.random() < 0.55) lane = (lane + 1 + Math.floor(Math.random() * 2)) % 3;
+  state.lastLane = lane;
+  const obsChance = Math.min(0.72, 0.35 + state.distance * 0.0004);
+  const wantObs = forceObs || Math.random() < obsChance;
+  if (wantObs) {
+    const tall = Math.random() > 0.42;
     const geo = tall ? new THREE.BoxGeometry(1.1, 1.5, 1.1) : new THREE.BoxGeometry(1.2, 0.75, 1.2);
     const mesh = new THREE.Mesh(geo, matRock);
     mesh.position.set(LANES[lane], tall ? 0.75 : 0.38, z);
     scene.add(mesh);
     state.obstacles.push({ mesh, lane, type: tall ? 'high' : 'low', z });
+    if (state.distance > 180 && Math.random() < 0.28) {
+      let lane2 = (lane + 1 + Math.floor(Math.random() * 2)) % 3;
+      const tall2 = Math.random() > 0.5;
+      const geo2 = tall2 ? new THREE.BoxGeometry(1.1, 1.5, 1.1) : new THREE.BoxGeometry(1.2, 0.75, 1.2);
+      const mesh2 = new THREE.Mesh(geo2, matRock);
+      mesh2.position.set(LANES[lane2], tall2 ? 0.75 : 0.38, z - 2.5);
+      scene.add(mesh2);
+      state.obstacles.push({ mesh: mesh2, lane: lane2, type: tall2 ? 'high' : 'low', z: z - 2.5 });
+    }
   } else {
     const n = LOW ? 3 : 4;
     for (let i = 0; i < n; i++) {
@@ -160,14 +227,21 @@ function showTouchPad(show) {
 }
 
 function resetGame() {
-  state.playing = true; state.dead = false; state.speed = state.baseSpeed;
+  ensureAudio();
+  SFX.start();
+  state.playing = true; state.dead = false;
+  state.speed = BASE_SPEED;
   state.lane = 1; state.targetX = LANES[1]; state.y = 0; state.vy = 0;
   state.jumping = false; state.sliding = false; state.slideTimer = 0;
   state.distance = 0; state.score = 0; state.coins = 0; state.clock = 0;
+  state.nextSpawnZ = -28; state.lastLane = 1;
   runner.position.set(0, 0, 0); runner.scale.set(1, 1, 1); runner.rotation.x = 0;
   clearWorld();
   segments.forEach((s, i) => { s.position.z = -i * 20; });
-  for (let i = 0; i < 10; i++) spawnStuffAt(-25 - i * 12);
+  for (let i = 0; i < 5; i++) {
+    spawnStuffAt(state.nextSpawnZ, i % 2 === 0);
+    state.nextSpawnZ -= spawnGap(0);
+  }
   updateHud();
   showTouchPad(true);
 }
@@ -180,10 +254,12 @@ function changeLane(dir) {
 function jump() {
   if (state.jumping || state.sliding) return;
   state.jumping = true; state.vy = 9.5;
+  SFX.jump();
 }
 function slide() {
   if (state.jumping || state.sliding) return;
   state.sliding = true; state.slideTimer = 0.55;
+  SFX.slide();
 }
 
 window.addEventListener('keydown', (e) => {
@@ -233,10 +309,12 @@ if (touchPad) {
 }
 
 $('btn-play').addEventListener('click', () => {
+  ensureAudio();
   startMenu.classList.remove('active'); startMenu.classList.add('hidden');
   gameOverScreen.classList.add('hidden'); hud.classList.remove('hidden'); resetGame();
 });
 $('btn-retry').addEventListener('click', () => {
+  ensureAudio();
   gameOverScreen.classList.add('hidden'); hud.classList.remove('hidden'); resetGame();
 });
 $('btn-go-menu').addEventListener('click', () => {
@@ -260,6 +338,7 @@ function updateHud() {
 function die(reason) {
   if (state.dead) return;
   state.dead = true; state.playing = false;
+  SFX.hit();
   hud.classList.add('hidden'); showTouchPad(false);
   const score = Math.floor(state.score);
   const high = loadNum(STORAGE.highScore);
@@ -276,7 +355,8 @@ function die(reason) {
 
 function animateRunner() {
   const u = runner.userData;
-  const runCycle = Math.sin(state.clock * 14);
+  const runRate = 12 + (state.speed - BASE_SPEED) * 0.25;
+  const runCycle = Math.sin(state.clock * runRate);
   if (state.sliding) {
     runner.scale.y = 0.55;
     u.leftArm.rotation.x = -0.8; u.rightArm.rotation.x = -0.8;
@@ -306,6 +386,7 @@ function checkCollisions() {
     if (c.z < -0.5 || c.z > 2) continue;
     if (Math.abs(c.mesh.position.x - px) < 0.75 && c.z > -0.3 && c.z < 1.8) {
       c.taken = true; state.coins += 1; scene.remove(c.mesh);
+      SFX.coin();
     }
   }
 }
@@ -327,7 +408,7 @@ function tick() {
   const dt = Math.min(clock.getDelta(), 0.05);
   if (state.playing && !state.dead) {
     state.clock += dt;
-    state.speed = state.baseSpeed + state.distance * 0.015;
+    state.speed = speedFromDistance(state.distance);
     state.distance += state.speed * dt;
     state.score = state.distance * 2 + state.coins * 10;
     const move = state.speed * dt;
@@ -344,10 +425,12 @@ function tick() {
     for (const c of state.coins3d) { c.mesh.position.z += move; c.z = c.mesh.position.z; c.mesh.rotation.z += dt * 3; }
     state.obstacles = state.obstacles.filter((o) => { if (o.z > 12) { scene.remove(o.mesh); return false; } return true; });
     state.coins3d = state.coins3d.filter((c) => { if (c.z > 12 || c.taken) { if (!c.taken) scene.remove(c.mesh); return false; } return true; });
-    const lastObs = state.obstacles[state.obstacles.length - 1];
-    const lastCoin = state.coins3d[state.coins3d.length - 1];
-    const lastZ = Math.min(lastObs ? lastObs.z : -40, lastCoin ? lastCoin.z : -40);
-    if (lastZ > -55 && Math.random() < 0.04) spawnStuffAt(lastZ - (10 + Math.random() * 8));
+    state.nextSpawnZ += move;
+    while (state.nextSpawnZ > -45) {
+      const gap = spawnGap(state.distance);
+      state.nextSpawnZ -= gap;
+      spawnStuffAt(state.nextSpawnZ);
+    }
     checkCollisions();
     updateHud();
     camera.position.x += (runner.position.x * 0.35 - camera.position.x) * 0.08;
@@ -359,7 +442,7 @@ function tick() {
   renderer.render(scene, camera);
 }
 
-for (let i = 0; i < 6; i++) spawnStuffAt(-20 - i * 14);
+for (let i = 0; i < 4; i++) spawnStuffAt(-22 - i * 14);
 animateRunner();
 tick();
 
