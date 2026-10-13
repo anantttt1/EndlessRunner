@@ -10,37 +10,45 @@ const gameOverScreen = $('game-over');
 const hud = $('hud');
 const controlsModal = $('controls-modal');
 const newRecordBadge = $('new-record-badge');
+const touchPad = $('touch-pad');
 $('menu-high-score').textContent = loadNum(STORAGE.highScore);
 $('menu-total-coins').textContent = '🪙 ' + loadNum(STORAGE.totalGold);
 
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const isMobile = isTouch || window.matchMedia('(max-width: 900px)').matches;
+const LOW = isMobile || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
+
 const canvas = $('game-canvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !LOW, powerPreference: 'high-performance', alpha: false });
+const maxPR = LOW ? 1.25 : 2;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPR));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = !LOW;
+if (!LOW) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a0c);
-scene.fog = new THREE.Fog(0x0a0a0c, 18, 70);
+scene.fog = new THREE.Fog(0x0a0a0c, LOW ? 14 : 18, LOW ? 50 : 70);
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 120);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(0, 4.2, 8);
 camera.lookAt(0, 1.5, 0);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-const sun = new THREE.DirectionalLight(0xffe6a0, 1.15);
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const sun = new THREE.DirectionalLight(0xffe6a0, 1.1);
 sun.position.set(6, 14, 4);
-sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
-sun.shadow.camera.left = -12; sun.shadow.camera.right = 12;
-sun.shadow.camera.top = 12; sun.shadow.camera.bottom = -12;
+if (!LOW) {
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(512, 512);
+  sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
+  sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+}
 scene.add(sun);
-const rim = new THREE.DirectionalLight(0x6080ff, 0.35);
+const rim = new THREE.DirectionalLight(0x6080ff, 0.3);
 rim.position.set(-4, 3, -6);
 scene.add(rim);
-const goldLight = new THREE.PointLight(0xf5c518, 0.6, 20);
+const goldLight = new THREE.PointLight(0xf5c518, 0.5, 18);
 goldLight.position.set(0, 3, 2);
 scene.add(goldLight);
 
@@ -61,38 +69,44 @@ scene.add(pathGroup);
 function makePathSegment(z) {
   const g = new THREE.Group();
   const floor = new THREE.Mesh(new THREE.BoxGeometry(8, 0.3, 20), matPath);
-  floor.position.y = -0.15; floor.receiveShadow = true; g.add(floor);
+  floor.position.y = -0.15;
+  if (!LOW) floor.receiveShadow = true;
+  g.add(floor);
   [-4.1, 4.1].forEach((x) => {
     const rail = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.35, 20), matPathEdge);
-    rail.position.set(x, 0.05, 0); rail.castShadow = true; g.add(rail);
+    rail.position.set(x, 0.05, 0); g.add(rail);
   });
   [-4.5, 4.5].forEach((x) => {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(0.4, 2.2, 20), matRock);
-    wall.position.set(x, 1, 0); wall.castShadow = true; g.add(wall);
+    wall.position.set(x, 1, 0); g.add(wall);
   });
   g.position.z = z; return g;
 }
 const segments = [];
-for (let i = 0; i < 8; i++) { const seg = makePathSegment(-i * 20); pathGroup.add(seg); segments.push(seg); }
+for (let i = 0; i < (LOW ? 6 : 8); i++) {
+  const seg = makePathSegment(-i * 20);
+  pathGroup.add(seg); segments.push(seg);
+}
 
 function createRunner() {
   const root = new THREE.Group();
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.55, 6, 12), matShirt);
-  torso.position.y = 1.15; torso.castShadow = true; root.add(torso);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), matSkin);
-  head.position.y = 1.72; head.castShadow = true; root.add(head);
-  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.23, 12, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), matHair);
+  const seg = LOW ? 6 : 12;
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.55, 4, seg), matShirt);
+  torso.position.y = 1.15; if (!LOW) torso.castShadow = true; root.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, seg, seg), matSkin);
+  head.position.y = 1.72; root.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.23, 8, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), matHair);
   hair.position.y = 1.78; hair.rotation.x = -0.15; root.add(hair);
-  const eyeGeo = new THREE.SphereGeometry(0.035, 8, 8);
+  const eyeGeo = new THREE.SphereGeometry(0.035, 6, 6);
   const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
   const leftEye = new THREE.Mesh(eyeGeo, eyeMat); leftEye.position.set(-0.07, 1.74, 0.18); root.add(leftEye);
   const rightEye = leftEye.clone(); rightEye.position.x = 0.07; root.add(rightEye);
-  const armGeo = new THREE.CapsuleGeometry(0.08, 0.4, 4, 8);
-  const leftArm = new THREE.Mesh(armGeo, matSkin); leftArm.position.set(-0.4, 1.25, 0); leftArm.castShadow = true; root.add(leftArm);
-  const rightArm = new THREE.Mesh(armGeo, matSkin); rightArm.position.set(0.4, 1.25, 0); rightArm.castShadow = true; root.add(rightArm);
-  const legGeo = new THREE.CapsuleGeometry(0.1, 0.45, 4, 8);
-  const leftLeg = new THREE.Mesh(legGeo, matPants); leftLeg.position.set(-0.14, 0.45, 0); leftLeg.castShadow = true; root.add(leftLeg);
-  const rightLeg = new THREE.Mesh(legGeo, matPants); rightLeg.position.set(0.14, 0.45, 0); rightLeg.castShadow = true; root.add(rightLeg);
+  const armGeo = new THREE.CapsuleGeometry(0.08, 0.4, 3, 6);
+  const leftArm = new THREE.Mesh(armGeo, matSkin); leftArm.position.set(-0.4, 1.25, 0); root.add(leftArm);
+  const rightArm = new THREE.Mesh(armGeo, matSkin); rightArm.position.set(0.4, 1.25, 0); root.add(rightArm);
+  const legGeo = new THREE.CapsuleGeometry(0.1, 0.45, 3, 6);
+  const leftLeg = new THREE.Mesh(legGeo, matPants); leftLeg.position.set(-0.14, 0.45, 0); root.add(leftLeg);
+  const rightLeg = new THREE.Mesh(legGeo, matPants); rightLeg.position.set(0.14, 0.45, 0); root.add(rightLeg);
   const shoeGeo = new THREE.BoxGeometry(0.16, 0.1, 0.28);
   const leftShoe = new THREE.Mesh(shoeGeo, matShoe); leftShoe.position.set(-0.14, 0.08, 0.04); root.add(leftShoe);
   const rightShoe = new THREE.Mesh(shoeGeo, matShoe); rightShoe.position.set(0.14, 0.08, 0.04); root.add(rightShoe);
@@ -105,7 +119,7 @@ scene.add(runner);
 const state = {
   playing: false, speed: 12, baseSpeed: 12, lane: 1, targetX: 0, y: 0, vy: 0,
   jumping: false, sliding: false, slideTimer: 0, distance: 0, score: 0, coins: 0,
-  clock: 0, spawnZ: -40, obstacles: [], coins3d: [], dead: false
+  clock: 0, obstacles: [], coins3d: [], dead: false
 };
 
 function clearWorld() {
@@ -119,18 +133,29 @@ function spawnStuffAt(z) {
     const tall = Math.random() > 0.45;
     const geo = tall ? new THREE.BoxGeometry(1.1, 1.5, 1.1) : new THREE.BoxGeometry(1.2, 0.75, 1.2);
     const mesh = new THREE.Mesh(geo, matRock);
-    mesh.castShadow = true;
     mesh.position.set(LANES[lane], tall ? 0.75 : 0.38, z);
     scene.add(mesh);
     state.obstacles.push({ mesh, lane, type: tall ? 'high' : 'low', z });
   } else {
-    for (let i = 0; i < 4; i++) {
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.05, 16), matCoin);
+    const n = LOW ? 3 : 4;
+    for (let i = 0; i < n; i++) {
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.05, LOW ? 10 : 16), matCoin);
       mesh.rotation.x = Math.PI / 2;
       mesh.position.set(LANES[lane], 1.15, z - i * 1.3);
       scene.add(mesh);
       state.coins3d.push({ mesh, lane, z: z - i * 1.3, taken: false });
     }
+  }
+}
+
+function showTouchPad(show) {
+  if (!touchPad) return;
+  if (show && isTouch) {
+    touchPad.classList.remove('hidden');
+    touchPad.setAttribute('aria-hidden', 'false');
+  } else {
+    touchPad.classList.add('hidden');
+    touchPad.setAttribute('aria-hidden', 'true');
   }
 }
 
@@ -144,6 +169,7 @@ function resetGame() {
   segments.forEach((s, i) => { s.position.z = -i * 20; });
   for (let i = 0; i < 10; i++) spawnStuffAt(-25 - i * 12);
   updateHud();
+  showTouchPad(true);
 }
 
 function changeLane(dir) {
@@ -169,17 +195,42 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
-let touchStartX = 0, touchStartY = 0;
-canvas.addEventListener('touchstart', (e) => {
-  const t = e.changedTouches[0]; touchStartX = t.clientX; touchStartY = t.clientY;
-}, { passive: true });
-canvas.addEventListener('touchend', (e) => {
+let touchStartX = 0, touchStartY = 0, touchStartT = 0;
+function onTouchStart(e) {
+  if (e.target.closest && e.target.closest('.touch-btn, button')) return;
+  const t = e.changedTouches[0];
+  touchStartX = t.clientX; touchStartY = t.clientY; touchStartT = performance.now();
+}
+function onTouchEnd(e) {
   if (!state.playing) return;
+  if (e.target.closest && e.target.closest('.touch-btn, button')) return;
   const t = e.changedTouches[0];
   const dx = t.clientX - touchStartX, dy = t.clientY - touchStartY;
-  if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) changeLane(dx > 0 ? 1 : -1);
-  else if (Math.abs(dy) > 30) { if (dy < 0) jump(); else slide(); }
-}, { passive: true });
+  const dt = performance.now() - touchStartT;
+  if (dt > 500) return;
+  const absX = Math.abs(dx), absY = Math.abs(dy);
+  if (absX < 24 && absY < 24) return;
+  if (absX > absY) changeLane(dx > 0 ? 1 : -1);
+  else if (dy < 0) jump(); else slide();
+}
+window.addEventListener('touchstart', onTouchStart, { passive: true });
+window.addEventListener('touchend', onTouchEnd, { passive: true });
+
+if (touchPad) {
+  touchPad.querySelectorAll('.touch-btn').forEach((btn) => {
+    const act = btn.dataset.action;
+    const fire = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!state.playing) return;
+      if (act === 'left') changeLane(-1);
+      if (act === 'right') changeLane(1);
+      if (act === 'jump') jump();
+      if (act === 'slide') slide();
+    };
+    btn.addEventListener('touchstart', fire, { passive: false });
+    btn.addEventListener('mousedown', fire);
+  });
+}
 
 $('btn-play').addEventListener('click', () => {
   startMenu.classList.remove('active'); startMenu.classList.add('hidden');
@@ -190,6 +241,7 @@ $('btn-retry').addEventListener('click', () => {
 });
 $('btn-go-menu').addEventListener('click', () => {
   gameOverScreen.classList.add('hidden'); hud.classList.add('hidden');
+  showTouchPad(false);
   startMenu.classList.remove('hidden'); startMenu.classList.add('active');
   state.playing = false;
   $('menu-high-score').textContent = loadNum(STORAGE.highScore);
@@ -207,7 +259,8 @@ function updateHud() {
 
 function die(reason) {
   if (state.dead) return;
-  state.dead = true; state.playing = false; hud.classList.add('hidden');
+  state.dead = true; state.playing = false;
+  hud.classList.add('hidden'); showTouchPad(false);
   const score = Math.floor(state.score);
   const high = loadNum(STORAGE.highScore);
   const isNew = score > high;
@@ -257,6 +310,17 @@ function checkCollisions() {
   }
 }
 
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPR));
+  renderer.setSize(w, h, false);
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 100));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
 const clock = new THREE.Clock();
 function tick() {
   requestAnimationFrame(tick);
@@ -267,7 +331,8 @@ function tick() {
     state.distance += state.speed * dt;
     state.score = state.distance * 2 + state.coins * 10;
     const move = state.speed * dt;
-    segments.forEach((s) => { s.position.z += move; if (s.position.z > 20) s.position.z -= 160; });
+    const loopLen = segments.length * 20;
+    segments.forEach((s) => { s.position.z += move; if (s.position.z > 20) s.position.z -= loopLen; });
     runner.position.x += (state.targetX - runner.position.x) * Math.min(1, 12 * dt);
     if (state.jumping) {
       state.vy -= 28 * dt; state.y += state.vy * dt;
@@ -296,9 +361,8 @@ function tick() {
 
 for (let i = 0; i < 6; i++) spawnStuffAt(-20 - i * 14);
 animateRunner();
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
 tick();
+
+document.body.addEventListener('touchmove', (e) => {
+  if (state.playing) e.preventDefault();
+}, { passive: false });
